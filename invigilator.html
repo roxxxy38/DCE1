@@ -347,12 +347,11 @@
 
 <script type="text/javascript">
 
-  // --- OOCSI Configuration ---
-  oocsiThingsConfig = { teamspace: "Team 12" };
+  oocsiThingsConfig = { teamspace: "UNIQUE_NAME" }; //add a unique OOCSI name
   OOCSI.connect('wss://oocsi.id.tue.nl/ws', 'tea12_oocsi_df');
   let latestMessage = null;
 
-  OOCSI.subscribe('TEAM12_GYRO', function(msg) {
+  OOCSI.subscribe('CHANNEL_NAME', function(msg) { //add your channel name
      latestMessage = msg.data;
      console.log(latestMessage);
   });
