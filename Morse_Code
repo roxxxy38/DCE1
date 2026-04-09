@@ -1,0 +1,277 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <WiFi.h>
+#include <OOCSI.h>
+
+OOCSI oocsi;
+const char* ssid = "iotroam";
+const char* password = "097Cf1muxx";
+bool waitingForSignal = false;
+
+// RFID Pins
+#define RST_PIN 21
+#define SS_PIN 5
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+
+// Component Pins
+#define RED_LED_PIN 2
+#define BLUE_LED_PIN 4
+#define GREEN_LED_PIN 25
+#define BUTTON_PIN 34
+#define SWITCH1_PIN 32
+#define SWITCH2_PIN 33
+
+// 7-Segment Pins (5611AS, common cathode)
+#define SEG_A 13   // top horizontal
+#define SEG_B 14   // top-right vertical
+#define SEG_C 15   // bottom-right vertical
+#define SEG_D 22   // bottom horizontal
+#define SEG_E 12   // bottom-left vertical
+#define SEG_F 26   // top-left vertical
+#define SEG_G 27   // middle horizontal
+
+const int ledBrightness = 20;
+
+const int debounceTime = 50;
+const int dotMaxDuration = 400;
+const int dashMaxDuration = 1500;
+const int sequenceTimeout = 3000;
+
+const int expectedSequence[9] = {0, 0, 0, 1, 1, 1, 0, 0, 0};
+int userSequence[9];
+int pressCount = 0;
+
+bool systemUnlocked = false;
+unsigned long pressStartTime = 0;
+unsigned long lastActivityTime = 0;
+bool lastFlickerableState = HIGH;
+bool currentButtonState = HIGH;
+unsigned long lastDebounceTime = 0;
+unsigned long resetHoldTime = 0;
+
+// ── Segment display timeout ──────────────────────────────────
+unsigned long segmentShowTime = 0;
+bool segmentActive = false;
+const int segmentDisplayDuration = 500; // 0.5 seconds
+
+// ── 7-Segment helpers ────────────────────────────────────────
+
+void segmentSetup() {
+  pinMode(SEG_A, OUTPUT); pinMode(SEG_B, OUTPUT);
+  pinMode(SEG_C, OUTPUT); pinMode(SEG_D, OUTPUT);
+  pinMode(SEG_E, OUTPUT); pinMode(SEG_F, OUTPUT);
+  pinMode(SEG_G, OUTPUT);
+  segmentClear();
+}
+
+void segmentClear() {
+  digitalWrite(SEG_A, LOW); digitalWrite(SEG_B, LOW);
+  digitalWrite(SEG_C, LOW); digitalWrite(SEG_D, LOW);
+  digitalWrite(SEG_E, LOW); digitalWrite(SEG_F, LOW);
+  digitalWrite(SEG_G, LOW);
+  segmentActive = false;
+}
+
+void segmentDot() {
+  digitalWrite(SEG_A, HIGH); digitalWrite(SEG_B, HIGH);
+  digitalWrite(SEG_C, HIGH); digitalWrite(SEG_D, HIGH);
+  digitalWrite(SEG_E, HIGH); digitalWrite(SEG_F, HIGH);
+  digitalWrite(SEG_G, LOW);
+  segmentShowTime = millis();
+  segmentActive = true;
+}
+
+void segmentDash() {
+  digitalWrite(SEG_A, LOW); digitalWrite(SEG_B, LOW);
+  digitalWrite(SEG_C, LOW); digitalWrite(SEG_D, LOW);
+  digitalWrite(SEG_E, LOW); digitalWrite(SEG_F, LOW);
+  digitalWrite(SEG_G, HIGH);
+  segmentShowTime = millis();
+  segmentActive = true;
+}
+
+// ── OOCSI ────────────────────────────────────────────────────
+
+void processMessage() {
+  bool start = oocsi.getBool("start", false);
+  if (start) {
+    waitingForSignal = false;
+    Serial.println("Signal received! Scan your keycard to begin.");
+    for (int i = 0; i < 3; i++) {
+      ledcWrite(BLUE_LED_PIN, ledBrightness); delay(300);
+      ledcWrite(BLUE_LED_PIN, 0);             delay(300);
+    }
+  }
+}
+
+// ── Setup ────────────────────────────────────────────────────
+
+void setup() {
+  Serial.begin(9600);
+  delay(500);
+  Serial.println("System Initialising...");
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  oocsi.connect("TEAM12_ESP3_CLIENT", "oocsi.id.tue.nl", processMessage);
+
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(SWITCH1_PIN, INPUT_PULLUP);
+  pinMode(SWITCH2_PIN, INPUT_PULLUP);
+
+  ledcAttach(BLUE_LED_PIN, 5000, 8);
+  ledcAttach(GREEN_LED_PIN, 5000, 8);
+
+  segmentSetup();
+
+  SPI.begin();
+  mfrc522.PCD_Init();
+
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(RED_LED_PIN, HIGH);
+    ledcWrite(GREEN_LED_PIN, ledBrightness);
+    ledcWrite(BLUE_LED_PIN, ledBrightness);
+    delay(200);
+    digitalWrite(RED_LED_PIN, LOW);
+    ledcWrite(GREEN_LED_PIN, 0);
+    ledcWrite(BLUE_LED_PIN, 0);
+    delay(200);
+  }
+
+  // TEST MODE: skips waiting for OOCSI signal, module starts immediately.
+  // To restore normal behaviour, remove the next line.
+  waitingForSignal = true;
+
+  Serial.println("Waiting for OOCSI signal...");
+}
+
+// ── Puzzle logic ─────────────────────────────────────────────
+
+void triggerError(const char* message) {
+  Serial.println(message);
+  segmentClear();
+  for (int i = 0; i < 10; i++) {
+    digitalWrite(RED_LED_PIN, HIGH); delay(100);
+    digitalWrite(RED_LED_PIN, LOW);  delay(100);
+  }
+  pressCount = 0;
+}
+
+void resetPuzzle() {
+  Serial.println("Manual Reset Triggered! Restarting...");
+  delay(500);
+  ESP.restart(); // ← full hardware restart, same as pressing the reset button
+}
+
+void checkPattern() {
+  bool match = true;
+  for (int i = 0; i < 9; i++) {
+    if (userSequence[i] != expectedSequence[i]) { match = false; break; }
+  }
+  if (match) {
+    Serial.println("SOS Accepted! Puzzle Solved.");
+    oocsi.newMessage("TEAM12_CENTRAL_MODULE");
+    oocsi.addBool("morse_solved", true);
+    oocsi.sendMessage();
+    segmentClear();
+    ledcWrite(BLUE_LED_PIN, 0);
+    for (int i = 0; i < 10; i++) {
+      ledcWrite(GREEN_LED_PIN, ledBrightness); delay(500);
+      ledcWrite(GREEN_LED_PIN, 0);             delay(500);
+    }
+    systemUnlocked = false;
+    pressCount = 0;
+    Serial.println("System locked. Scan card to play again.");
+  } else {
+    triggerError("Incorrect 9-digit code entered.");
+  }
+}
+
+// ── Loop ─────────────────────────────────────────────────────
+
+void loop() {
+  oocsi.check();
+
+  // Auto-clear segment display after 0.5 seconds
+  if (segmentActive && (millis() - segmentShowTime >= segmentDisplayDuration)) {
+    segmentClear();
+  }
+
+  if (waitingForSignal) return;
+
+  if (!systemUnlocked) {
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      systemUnlocked = true;
+      ledcWrite(BLUE_LED_PIN, ledBrightness);
+      Serial.println("Card Accepted. System Unlocked.");
+      mfrc522.PICC_HaltA();
+      lastActivityTime = millis();
+    }
+  }
+
+  bool switch1Active = (digitalRead(SWITCH1_PIN) == LOW);
+  bool switch2Active = (digitalRead(SWITCH2_PIN) == LOW);
+  bool reading = digitalRead(BUTTON_PIN);
+
+  if (reading != lastFlickerableState) lastDebounceTime = millis();
+
+  if ((millis() - lastDebounceTime) > debounceTime) {
+    if (reading != currentButtonState) {
+      currentButtonState = reading;
+      if (currentButtonState == LOW) {
+        pressStartTime = millis();
+        if (!systemUnlocked) {
+          if (!(switch1Active && !switch2Active)) {
+            Serial.println("Error: Locked. Scan card first.");
+            for (int i = 0; i < 10; i++) {
+              ledcWrite(BLUE_LED_PIN, ledBrightness); delay(100);
+              ledcWrite(BLUE_LED_PIN, 0);             delay(100);
+            }
+          }
+        }
+      } else {
+        if (systemUnlocked) {
+          if (!switch1Active || !switch2Active) {
+            if (!(switch1Active && !switch2Active))
+              Serial.println("Error: Master switches are not activated.");
+          } else {
+            unsigned long duration = millis() - pressStartTime;
+            lastActivityTime = millis();
+            if (duration <= dotMaxDuration) {
+              Serial.println("Dot");
+              userSequence[pressCount] = 0;
+              segmentDot();
+            } else if (duration <= dashMaxDuration) {
+              Serial.println("Dash");
+              userSequence[pressCount] = 1;
+              segmentDash();
+            } else {
+              Serial.println("Invalid duration.");
+              userSequence[pressCount] = -1;
+              segmentClear();
+            }
+            pressCount++;
+            if (pressCount == 9) checkPattern();
+          }
+        }
+      }
+    }
+  }
+
+  if (systemUnlocked && pressCount > 0 && currentButtonState == HIGH) {
+    if ((millis() - lastActivityTime) > sequenceTimeout)
+      triggerError("Timeout: Unfinished pattern.");
+  }
+
+  if (currentButtonState == LOW && switch1Active && !switch2Active) {
+    if (resetHoldTime == 0) resetHoldTime = millis();
+    else if ((millis() - resetHoldTime) >= 5000) {
+      resetPuzzle();
+    }
+  } else {
+    resetHoldTime = 0;
+  }
+
+  lastFlickerableState = reading;
+}
