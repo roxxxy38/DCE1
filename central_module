@@ -1,0 +1,286 @@
+#include <LedControl.h>
+#include <ESP8266WiFi.h>
+#include <OOCSI.h>
+#include <Stepper.h>
+
+// DIN=D7 (13), CLK=D5 (14), CS=D8 (15)
+LedControl lc = LedControl(13, 14, 15, 1);
+
+OOCSI oocsi;
+
+const char* ssid     = "iotroam";
+const char* password = "Welkom01!";
+
+bool eyesDone      = false;
+bool signalSent    = false;
+bool highlightDone = false;
+bool morseDone     = false;
+bool calcDone      = false;
+
+int stepsPerRevolution = 2090;
+int numberOfPuzzles    = 5;
+
+Stepper myStepper = Stepper(stepsPerRevolution, 5, 4, 12, 16);
+
+byte A[]   = {B00000000, B00111100, B01100110, B01100110, B01111110, B01100110, B01100110, B01100110};
+byte B_[]  = {B01111000, B01001000, B01001000, B01110000, B01001000, B01000100, B01000100, B01111100};
+byte C[]   = {B00000000, B00011110, B00100000, B01000000, B01000000, B01000000, B00100000, B00011110};
+byte D[]   = {B00000000, B00111000, B00100100, B00100010, B00100010, B00100100, B00111000, B00000000};
+byte E[]   = {B00000000, B00111100, B00100000, B00111000, B00100000, B00100000, B00111100, B00000000};
+byte F[]   = {B00000000, B00111100, B00100000, B00111000, B00100000, B00100000, B00100000, B00000000};
+byte G[]   = {B00000000, B00111110, B00100000, B00100000, B00101110, B00100010, B00111110, B00000000};
+byte H[]   = {B00000000, B00100100, B00100100, B00111100, B00100100, B00100100, B00100100, B00000000};
+byte I[]   = {B00000000, B00111000, B00010000, B00010000, B00010000, B00010000, B00111000, B00000000};
+byte J[]   = {B00000000, B00011100, B00001000, B00001000, B00001000, B00101000, B00111000, B00000000};
+byte K[]   = {B00000000, B00100100, B00101000, B00110000, B00101000, B00100100, B00100100, B00000000};
+byte L[]   = {B00000000, B00100000, B00100000, B00100000, B00100000, B00100000, B00111100, B00000000};
+byte M[]   = {B00000000, B00000000, B01000100, B10101010, B10010010, B10000010, B10000010, B00000000};
+byte N[]   = {B00000000, B00100010, B00110010, B00101010, B00100110, B00100010, B00000000, B00000000};
+byte O[]   = {B00000000, B00111100, B01000010, B01000010, B01000010, B01000010, B00111100, B00000000};
+byte P[]   = {B00000000, B00111000, B00100100, B00100100, B00111000, B00100000, B00100000, B00000000};
+byte Q[]   = {B00000000, B00111100, B01000010, B01000010, B01000010, B01000110, B00111110, B00000001};
+byte R[]   = {B00000000, B00111000, B00100100, B00100100, B00111000, B00100100, B00100100, B00000000};
+byte S[]   = {B00000000, B00111100, B00100000, B00111100, B00000100, B00000100, B00111100, B00000000};
+byte T[]   = {B00000000, B01111100, B00010000, B00010000, B00010000, B00010000, B00010000, B00000000};
+byte U[]   = {B00000000, B01000010, B01000010, B01000010, B01000010, B00100100, B00011000, B00000000};
+byte V[]   = {B00000000, B00100010, B00100010, B00100010, B00010100, B00010100, B00001000, B00000000};
+byte W[]   = {B00000000, B10000010, B10010010, B01010100, B01010100, B00101000, B00000000, B00000000};
+byte X[]   = {B00000000, B01000010, B00100100, B00011000, B00011000, B00100100, B01000010, B00000000};
+byte Y[]   = {B00000000, B01000100, B00101000, B00010000, B00010000, B00010000, B00010000, B00000000};
+byte Z[]   = {B00000000, B00111100, B00000100, B00001000, B00010000, B00100000, B00111100, B00000000};
+byte RND[] = {B11111111, B11100111, B11000011, B10000001, B10000001, B11000011, B11100111, B11111111};
+
+void printByte(byte character[]) {
+  lc.clearDisplay(0);
+  for (int i = 0; i < 8; i++) {
+    lc.setRow(0, i, character[i]);
+  }
+}
+
+void stepWithYield(int steps) {
+  int dir   = (steps > 0) ? 1 : -1;
+  int total = abs(steps);
+  for (int i = 0; i < total; i++) {
+    myStepper.step(dir);
+    if (i % 50 == 0) yield();
+  }
+}
+
+void processMessage() {
+  Serial.println("--- message received ---");
+  Serial.print("eyes_solved: ");  Serial.println(oocsi.getBool("eyes_solved", false));
+  Serial.print("active: ");       Serial.println(oocsi.getBool("active", false));
+  Serial.print("solved: ");       Serial.println(oocsi.getBool("solved", false));
+  Serial.print("morse_solved: "); Serial.println(oocsi.getBool("morse_solved", false));
+  Serial.print("calc_solved: ");  Serial.println(oocsi.getBool("calc_solved", false));
+  Serial.print("flags: eyesDone=");      Serial.print(eyesDone);
+  Serial.print(" signalSent=");          Serial.print(signalSent);
+  Serial.print(" highlightDone=");       Serial.print(highlightDone);
+  Serial.print(" morseDone=");           Serial.print(morseDone);
+  Serial.print(" calcDone=");            Serial.println(calcDone);
+
+  bool requestState = oocsi.getBool("requestState", false);
+  if (requestState) {
+    if (signalSent) {
+      oocsi.newMessage("TEAM12_HIGHLIGHTER");
+      oocsi.addBool("trigger", true);
+      oocsi.sendMessage();
+      Serial.println("Re-sent trigger to late-joining highlighter");
+    }
+    return;
+  }
+
+  bool eyes_solved = oocsi.getBool("eyes_solved", false);
+  if (eyes_solved && !eyesDone) {
+    eyesDone = true;
+    Serial.println("Eyes solved!");
+    oocsi.newMessage("TEAM12_BOOKSHELF_CLIENT");
+    oocsi.addBool("start", true);
+    oocsi.sendMessage();
+    stepWithYield(stepsPerRevolution / numberOfPuzzles);
+    printByte(C);
+    delay(2000);
+    return;
+  }
+
+  bool active = oocsi.getBool("active", false);
+  if (active && !signalSent) {
+    signalSent = true;
+    Serial.println("Sending trigger to highlighter...");
+    oocsi.newMessage("TEAM12_HIGHLIGHTER");
+    oocsi.addBool("trigger", true);
+    oocsi.sendMessage();
+    stepWithYield(stepsPerRevolution / numberOfPuzzles);
+    printByte(A);
+    delay(2000);
+    return;
+  }
+
+  bool solved = oocsi.getBool("solved", false);
+  if (solved && !highlightDone) {
+    highlightDone = true;
+    Serial.println("Highlighter solved!");
+    oocsi.newMessage("TEAM12_ESP3_CLIENT");
+    oocsi.addBool("start", true);
+    oocsi.sendMessage();
+    stepWithYield(stepsPerRevolution / numberOfPuzzles);
+    printByte(D);
+    delay(2000);
+    return;
+  }
+
+  bool morse_solved = oocsi.getBool("morse_solved", false);
+  if (morse_solved && !morseDone) {
+    morseDone = true;
+    Serial.println("Morse solved!");
+    oocsi.newMessage("TEAM12_CALCULATOR");
+    oocsi.addBool("start", true);
+    oocsi.sendMessage();
+    stepWithYield(stepsPerRevolution / numberOfPuzzles);
+    printByte(B_);
+    delay(2000);
+    return;
+  }
+
+  bool calc_solved = oocsi.getBool("calc_solved", false);
+  if (calc_solved && !calcDone) {
+    calcDone = true;
+    Serial.println("Escape room complete!");
+    stepWithYield(stepsPerRevolution / numberOfPuzzles);
+    printByte(B_);
+    delay(2000);
+    return;
+  }
+}
+
+void calibrateClock() {
+  if (Serial.available() > 0) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    if (input.startsWith("L:") && input.length() == 3) {
+      char letter = input.charAt(2);
+      Serial.print("Displaying letter: ");
+      Serial.println(letter);
+      switch (letter) {
+        case 'A': printByte(A); break;
+        case 'B': printByte(B_); break;
+        case 'C': printByte(C); break;
+        case 'D': printByte(D); break;
+        case 'E': printByte(E); break;
+        case 'F': printByte(F); break;
+        case 'G': printByte(G); break;
+        case 'H': printByte(H); break;
+        case 'I': printByte(I); break;
+        case 'J': printByte(J); break;
+        case 'K': printByte(K); break;
+        case 'L': printByte(L); break;
+        case 'M': printByte(M); break;
+        case 'N': printByte(N); break;
+        case 'O': printByte(O); break;
+        case 'P': printByte(P); break;
+        case 'Q': printByte(Q); break;
+        case 'R': printByte(R); break;
+        case 'S': printByte(S); break;
+        case 'T': printByte(T); break;
+        case 'U': printByte(U); break;
+        case 'V': printByte(V); break;
+        case 'W': printByte(W); break;
+        case 'X': printByte(X); break;
+        case 'Y': printByte(Y); break;
+        case 'Z': printByte(Z); break;
+        case '?': printByte(RND); break;
+        default: Serial.println("Unknown letter. Use L:A through L:Z"); break;
+      }
+
+    } else if (input == "T:1") {
+      if (!eyesDone) {
+        eyesDone = true;
+        Serial.println("Manual T:1 — triggering bookshelf...");
+        oocsi.newMessage("TEAM12_BOOKSHELF_CLIENT");
+        oocsi.addBool("start", true);
+        oocsi.sendMessage();
+        stepWithYield(stepsPerRevolution / numberOfPuzzles);
+        printByte(C);
+      } else { Serial.println("T:1 already done."); }
+
+    } else if (input == "T:2") {
+      if (!signalSent) {
+        signalSent = true;
+        Serial.println("Manual T:2 — triggering highlighter...");
+        oocsi.newMessage("TEAM12_HIGHLIGHTER");
+        oocsi.addBool("trigger", true);
+        oocsi.sendMessage();
+        stepWithYield(stepsPerRevolution / numberOfPuzzles);
+        printByte(A);
+      } else { Serial.println("T:2 already done."); }
+
+    } else if (input == "T:3") {
+      if (!highlightDone) {
+        highlightDone = true;
+        Serial.println("Manual T:3 — triggering morse...");
+        oocsi.newMessage("TEAM12_ESP3_CLIENT");
+        oocsi.addBool("start", true);
+        oocsi.sendMessage();
+        stepWithYield(stepsPerRevolution / numberOfPuzzles);
+        printByte(D);
+      } else { Serial.println("T:3 already done."); }
+
+    } else if (input == "T:4") {
+      if (!morseDone) {
+        morseDone = true;
+        Serial.println("Manual T:4 — triggering calculator...");
+        oocsi.newMessage("TEAM12_CALCULATOR");
+        oocsi.addBool("start", true);
+        oocsi.sendMessage();
+        stepWithYield(stepsPerRevolution / numberOfPuzzles);
+        printByte(B_);
+      } else { Serial.println("T:4 already done."); }
+
+    } else if (input == "T:5") {
+      if (!calcDone) {
+        calcDone = true;
+        Serial.println("Manual T:5 — escape room complete!");
+        stepWithYield(stepsPerRevolution / numberOfPuzzles);
+        printByte(B_);
+      } else { Serial.println("T:5 already done."); }
+
+    } else {
+      int incoming = input.toInt();
+      if (incoming != 0) stepWithYield(incoming);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  lc.shutdown(0, false);
+  lc.setIntensity(0, 8);
+  lc.clearDisplay(0);
+
+  // Quick test — all LEDs on so you can confirm it works before WiFi starts
+  for (int i = 0; i < 8; i++) lc.setRow(0, i, 0xFF);
+  delay(1000);
+  lc.clearDisplay(0);
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    yield();
+  }
+  Serial.println(" connected!");
+
+  myStepper.setSpeed(10);
+
+  oocsi.connect("TEAM12_CENTRAL_MODULE", "oocsi.id.tue.nl", processMessage);
+  Serial.println("OOCSI connected. Ready.");
+  Serial.println("Commands: L:A-Z = show letter | T:1-5 = manual trigger | number = stepper steps");
+}
+
+void loop() {
+  oocsi.check();
+  calibrateClock();
+}
